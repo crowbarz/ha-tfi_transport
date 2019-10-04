@@ -1,0 +1,8 @@
+{
+  "domain": "tfi_transport",
+  "name": "Transport for Ireland Journey Planner RTPI information",
+  "documentation": "https://home-assistant.io/components/tfi_transport/",
+  "dependencies": [],
+  "codeowners": ["@crowbarz"],
+  "requirements": ["pyirishrail==0.0.2"]
+}
