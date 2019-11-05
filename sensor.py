@@ -48,6 +48,8 @@ ATTR_DEPARTURES_JSON = 'departures_json'
 ATTR_SECOND_DEPARTURE = 'second_departure'
 ATTR_SOURCE = 'source'
 
+ATTR_SOURCE_WARNING = 'source_warning'
+
 CONF_ATTRIBUTION = "Data provided by transportforireland.ie per conditions of reuse at https://data.gov.ie/licence"
 CONF_STOP_ID = 'stop_id'
 CONF_ROUTE = 'route'
@@ -452,6 +454,12 @@ class PublicTransportData: # (metaclass=ABCMeta):
         self._departures = []
         self._next_departure = None
         self._no_data_count = 0
+        self._source_warning = False
+        
+        ## Initialise sources
+        for source in self._rtpi_sources:
+            source_data = self._rtpi_sources[source]
+            source_data[ATTR_SOURCE_WARNING] = False
 
     def get_departures(self):
         return self._departures
@@ -507,31 +515,35 @@ class PublicTransportData: # (metaclass=ABCMeta):
         efa_data = response.json()
 
         for dep in efa_data['departureList']:
-            route = dep['servingLine']['number']
-            origin = dep['servingLine']['directionFrom']
-            destination = dep['servingLine']['direction']
-            now = datetime.now().replace(second=0, microsecond=0)
-            direction = "Outbound" if dep['servingLine']['liErgRiProj']['direction'] == "R" else "Inbound"
-            scheduled_at = self._convert_json_datetime(dep['dateTime'])
-            countdown = int(dep['countdown'])
-            is_realtime = dep['servingLine']['realtime'] == "1"
-            if is_realtime:
-                due_at = now + timedelta(minutes=countdown)
+            try:
+                route = dep['servingLine']['number']
+                origin = dep['servingLine']['directionFrom'] \
+                    if 'directionFrom' in dep['servingLine'] else 'unknown'
+                destination = dep['servingLine']['direction']
+                now = datetime.now().replace(second=0, microsecond=0)
+                direction = "Outbound" if dep['servingLine']['liErgRiProj']['direction'] == "R" else "Inbound"
+                scheduled_at = self._convert_json_datetime(dep['dateTime'])
+                countdown = int(dep['countdown'])
+                is_realtime = dep['servingLine']['realtime'] == "1"
+                if is_realtime:
+                    due_at = now + timedelta(minutes=countdown)
+                else:
+                    due_at = scheduled_at
+            except:
+                _LOGGER.warning("Skipping malformed departure: %s", dep)
             else:
-                due_at = scheduled_at
-
-            departures.append({
-                ATTR_SOURCE: "tfi_efa",
-                ATTR_ROUTE: route,
-                ATTR_DESTINATION: destination,
-                ATTR_ORIGIN: origin,
-                ATTR_DIRECTION: direction,
-                ATTR_SCHEDULED_AT: scheduled_at,
-                ATTR_DUE_AT: due_at,
-                ATTR_COUNTDOWN: countdown,
-                ATTR_IS_REALTIME: is_realtime
-            })
-            departures.sort(key=lambda a: int(a[ATTR_COUNTDOWN]))
+                departures.append({
+                    ATTR_SOURCE: "tfi_efa",
+                    ATTR_ROUTE: route,
+                    ATTR_DESTINATION: destination,
+                    ATTR_ORIGIN: origin,
+                    ATTR_DIRECTION: direction,
+                    ATTR_SCHEDULED_AT: scheduled_at,
+                    ATTR_DUE_AT: due_at,
+                    ATTR_COUNTDOWN: countdown,
+                    ATTR_IS_REALTIME: is_realtime
+                })
+        departures.sort(key=lambda a: int(a[ATTR_COUNTDOWN]))
         return departures
 
     def _convert_xml_datetime(self, dt_xml):
@@ -747,7 +759,7 @@ class PublicTransportData: # (metaclass=ABCMeta):
                 stop_id = source_data[CONF_STOP_ID]
                 skip_no_results = source_data[CONF_SKIP_NO_RESULTS]
                 ssl_verify = source_data[CONF_SSL_VERIFY]
-                _LOGGER.info("Retrieving source %s (stop_id=%s, ssl_verify=%s", source, stop_id, ssl_verify)
+                _LOGGER.info("Retrieving source %s (stop_id=%s, skip_no_results=%s, ssl_verify=%s)", source, stop_id, skip_no_results, ssl_verify)
                 if source == RTPI_SOURCE_TFI_EFA_XML:
                     departures = self.update_source_tfi_efa_xml(stop_id, ssl_verify)
                 elif source == RTPI_SOURCE_TFI_EFA:
@@ -763,21 +775,36 @@ class PublicTransportData: # (metaclass=ABCMeta):
                     departures = None
 
                 if departures == [] and skip_no_results:
-                    _LOGGER.warning("%s: ignoring empty source %s", stop_id, source)
+                    if not source_data[ATTR_SOURCE_WARNING]:
+                        _LOGGER.warning("%s: ignoring empty source %s", stop_id, source)
+                        source_data[ATTR_SOURCE_WARNING] = True
                 elif departures != None:
+                    ## Departure data retrieved from current source
+                    if self._current_source and self._current_source != source:
+                        _LOGGER.warning("%s: switching source from %s to %s", stop_id, self._current_source, source)
+                    else:
+                        _LOGGER.info("%s: using data from source %s", stop_id, source)
+
                     self._all_departures = departures
                     self._current_source = source
+                    source_data[ATTR_SOURCE_WARNING] = False
                     break
                 else:
-                    _LOGGER.warning("%s: error retrieving data for source %s", stop_id, source)
-    
+                    if not source_data[ATTR_SOURCE_WARNING]:
+                        _LOGGER.warning("%s: error retrieving data for source %s", stop_id, source)
+                        source_data[ATTR_SOURCE_WARNING] = True
+
             if departures == None:
                 if self._all_departures:
-                    _LOGGER.warning("%s: no data sources, using cached data", self._stop_id)
+                    if not self._source_warning:
+                        _LOGGER.warning("%s: no available data sources, using cached data", self._stop_id)
+                        self._source_warning = True
                     self._all_departures = self.fast_update(self._all_departures)
                 else:
                     _LOGGER.error("%s: no data sources", self._stop_id)
                     return False
+            else:
+                self._source_warning = False
         else:
             ## Perform fast refresh
             _LOGGER.info("%s: Performing fast update (next_refresh=%d, scan_count=%d)", self._stop_id, self._next_refresh, self._scan_count)
@@ -807,9 +834,10 @@ class PublicTransportData: # (metaclass=ABCMeta):
             dep_countdown = dep_entry[ATTR_COUNTDOWN]
             dep_is_realtime = dep_entry[ATTR_IS_REALTIME]
 
-            if (not realtime_only or dep_is_realtime or dep_countdown < 0) \
+            if (not realtime_only or dep_is_realtime) \
               and (not route_list or dep_route in route_list) \
               and (not direction or dep_direction in direction) \
+              and (dep_countdown >= 0) \
               and (limit_time_horizon == 0 or dep_countdown <= limit_time_horizon) \
               and (limit_departures == 0 or departure_count < limit_departures):
                 _LOGGER.debug("Added departure for %s(%s) @ %s (%s min) (is_realtime=%s)", dep_route, dep_direction, dep_due_at, dep_countdown, dep_is_realtime)
