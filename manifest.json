@@ -1,6 +1,7 @@
 {
   "domain": "tfi_transport",
   "name": "Transport for Ireland Journey Planner RTPI information",
+  "version": "0.1.0",
   "documentation": "https://home-assistant.io/components/tfi_transport/",
   "dependencies": [],
   "codeowners": ["@crowbarz"],
