@@ -1,3 +1,7 @@
+# DEPRECATION NOTICE
+
+This integration has been deprecated as the API used no longer works. It has been superseded by [tfi_journeyplanner](https://github.com/crowbarz/ha-tfi_journeyplanner) which works for all Transport for Ireland transit providers.
+
 # ha-tfi_transport
 
 Support for Dublin Bus, Irish Rail and [Transport for Ireland Journey Planner](https://journeyplanner.transportforireland.ie/) RTPI information sources to display departure board information.
